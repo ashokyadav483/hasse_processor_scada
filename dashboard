@@ -1,1 +1,732 @@
+import streamlit as st
+from opcua import Client, ua
+import time
+import pandas as pd
+from datetime import datetime
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
+st.set_page_config(
+    page_title="HASSE PROCESSOR COLORMAN D - Industrial SCADA",
+    page_icon="🏭",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for light industrial theme
+st.markdown("""
+    <style>
+    /* Light industrial theme */
+    .stApp {
+        background-color: #f5f5f5;
+    }
+    .main-header {
+        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border: 1px solid #e0e0e0;
+    }
+    .metric-card {
+        background: white;
+        padding: 1.2rem;
+        border-radius: 12px;
+        border-left: 4px solid #2c7da0;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 8px;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    .status-running {
+        background-color: #2ecc71;
+        box-shadow: 0 0 5px #2ecc71;
+    }
+    .status-stopped {
+        background-color: #e74c3c;
+        box-shadow: 0 0 5px #e74c3c;
+    }
+    .warning-text {
+        color: #e67e22;
+        font-weight: bold;
+    }
+    .success-text {
+        color: #27ae60;
+        font-weight: bold;
+    }
+    .danger-text {
+        color: #e74c3c;
+        font-weight: bold;
+    }
+    .info-text {
+        color: #3498db;
+        font-weight: bold;
+    }
+    .control-button {
+        background-color: #3498db;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+    }
+    .control-button:hover {
+        background-color: #2980b9;
+    }
+    .sidebar .sidebar-content {
+        background-color: #ffffff;
+        border-right: 1px solid #e0e0e0;
+    }
+    hr {
+        margin: 1rem 0;
+        border: none;
+        border-top: 1px solid #e0e0e0;
+    }
+    .temperature-gauge {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 0.5rem;
+        margin-top: 0.5rem;
+    }
+    .alert-box {
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+        border-left: 4px solid;
+    }
+    .alert-critical {
+        background-color: #fee;
+        border-left-color: #e74c3c;
+        color: #c0392b;
+    }
+    .alert-warning {
+        background-color: #fff3e0;
+        border-left-color: #f39c12;
+        color: #e67e22;
+    }
+    .alert-success {
+        background-color: #e8f8f5;
+        border-left-color: #27ae60;
+        color: #229954;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Initialize session state
+if "plc_client" not in st.session_state:
+    PLC_URL = "opc.tcp://192.168.0.1:4840"
+    try:
+        client = Client(PLC_URL)
+        client.connect()
+        st.session_state.plc_client = client
+        st.session_state.connection_status = True
+    except Exception as e:
+        st.error(f"PLC Connection Error: {e}")
+        st.session_state.connection_status = False
+        st.stop()
+
+client = st.session_state.plc_client
+
+# Safe read function with error handling
+def read_node(node_id, default=0):
+    try:
+        node = client.get_node(node_id)
+        return node.get_value()
+    except:
+        return default
+
+# Safe write function
+def write_bool(node_id, value):
+    try:
+        node = client.get_node(node_id)
+        node.set_value(ua.DataValue(ua.Variant(value, ua.VariantType.Boolean)))
+        return True
+    except Exception as e:
+        st.error(f"Write Error: {e}")
+        return False
+
+# Read all values with error handling
+@st.cache_data(ttl=2)
+def read_all_values():
+    return {
+        "CYCLE_TIME": read_node("ns=4;i=56"),
+        "DAILY_PRODUCTION": read_node("ns=4;i=52"),
+        "TOTAL_PRODUCTION": read_node("ns=4;i=51"),
+        "PREHEAT_FAN_TEMP": read_node("ns=4;i=72"),
+        "PREHEAT_LEFT_TEMP": read_node("ns=4;i=73"),
+        "PREHEAT_READY_VALUE": read_node("ns=4;i=74"),
+        "ACTUAL_VALUE": read_node("ns=4;i=76"),
+        "MACHINE_START": read_node("ns=4;i=71"),
+        "MACHINE_STATUS": read_node("ns=4;i=70"),
+        "DEVELOPER_TEMP": read_node("ns=4;i=130"),
+        "Emergency_Stop":read_node("ns=4;i=93"),
+    }
+
+# Read values
+values = read_all_values()
+
+# Sidebar - System Status
+with st.sidebar:
+    st.markdown("## 🏭 SYSTEM CONTROL PANEL")
+    st.markdown("---")
+    
+    # Connection status
+    st.markdown("### 🔌 CONNECTION STATUS")
+    if st.session_state.connection_status:
+        st.markdown('<span class="status-indicator status-running"></span> **PLC Connected**', 
+                   unsafe_allow_html=True)
+        st.caption("Communication: Active")
+    else:
+        st.markdown('<span class="status-indicator status-stopped"></span> **PLC Disconnected**', 
+                   unsafe_allow_html=True)
+        st.caption("Communication: Failed")
+    
+    st.markdown("---")
+    
+    # Machine Status
+    st.markdown("### 🏭 MACHINE STATUS")
+    if values["MACHINE_START"]:
+        st.markdown('<span class="success-text">● RUNNING - Active Production</span>', 
+                   unsafe_allow_html=True)
+        st.progress(100)
+    else:
+        st.markdown('<span class="danger-text">● STOPPED - Standby Mode</span>', 
+                   unsafe_allow_html=True)
+        st.progress(0)
+    
+    st.markdown("---")
+    
+    # Production Targets
+    st.markdown("### 🎯 PRODUCTION TARGETS")
+    target_hourly = st.number_input("Hourly Target (units)", value=120, step=10, key="hourly_target")
+    target_daily = target_hourly * 24
+    st.metric("Daily Target", f"{target_daily:,} units", delta=None)
+    
+    # Progress
+    if target_daily > 0:
+        progress = (values["DAILY_PRODUCTION"] / target_daily) * 100
+        progress = min(progress, 100)
+        st.progress(progress/100)
+        st.caption(f"Progress: {progress:.1f}%")
+        
+        # Remaining to target
+        remaining = max(0, target_daily - values["DAILY_PRODUCTION"])
+        st.metric("Remaining to Target", f"{remaining:,} units")
+    
+    st.markdown("---")
+    
+    # System Information
+    st.markdown("### ℹ️ SYSTEM INFO")
+    st.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
+    st.caption("Refresh Rate: 2 seconds")
+    st.caption("OPC UA Server: Connected")
+
+# Main Header
+st.markdown('<div class="main-header">', unsafe_allow_html=True)
+col1, col2, col3 = st.columns([2, 1, 1])
+with col1:
+    st.title("🏭 HASSE PROCESSOR COLORMAN D")
+    st.caption("Industrial SCADA System | Real-time Production Monitoring & Control")
+with col2:
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.metric("System Time", current_time)
+with col3:
+    st.metric("Data Refresh", "2 seconds", delta="Real-time")
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Main Metrics Row
+st.markdown("### 📊 KEY PERFORMANCE INDICATORS")
+col1, col2, col3, col4, col5 = st.columns(5)
+
+with col1:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("🔄 CYCLE TIME", f"{values['CYCLE_TIME']:.1f} sec", 
+              delta=None, delta_color="normal")
+    st.caption("Current production cycle")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("📦 DAILY PRODUCTION", f"{values['DAILY_PRODUCTION']:,} units",
+              delta=None, delta_color="normal")
+    st.caption("Today's production count")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col3:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("🏭 TOTAL PRODUCTION", f"{values['TOTAL_PRODUCTION']:,} units",
+              delta=None, delta_color="normal")
+    st.caption("Lifetime production")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col4:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("🌡️ DEVELOPER TEMP", f"{values['DEVELOPER_TEMP']:.1f}°C",
+              delta=None, delta_color="normal")
+    st.caption("Developer temperature")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col5:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    if values["MACHINE_START"]:
+        st.markdown('<span class="success-text">🟢 MACHINE RUNNING</span>', 
+                   unsafe_allow_html=True)
+        st.caption("Production active")
+    else:
+        st.markdown('<span class="danger-text">🔴 MACHINE STOPPED</span>', 
+                   unsafe_allow_html=True)
+        st.caption("Standby mode")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Temperature Dashboard
+st.markdown("### 🌡️ TEMPERATURE MONITORING")
+temp_col1, temp_col2, temp_col3 = st.columns(3)
+
+def get_temp_status(temp, warning=160, critical=180):
+    if temp >= critical:
+        return "🔴 CRITICAL", "danger-text"
+    elif temp >= warning:
+        return "⚠️ WARNING", "warning-text"
+    else:
+        return "✅ NORMAL", "success-text"
+
+with temp_col1:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("Preheat Fan Temperature", f"{values['PREHEAT_FAN_TEMP']:.1f}°C")
+    fan_temp = values['PREHEAT_FAN_TEMP']
+    fan_percent = min(100, max(0, (fan_temp / 200) * 100))
+    st.progress(fan_percent/100)
+    status, status_class = get_temp_status(fan_temp)
+    st.markdown(f'<span class="{status_class}">{status}</span>', unsafe_allow_html=True)
+    st.caption(f"Setpoint: 150°C | Current: {fan_temp:.1f}°C")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with temp_col2:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("Preheat Left Temperature", f"{values['PREHEAT_LEFT_TEMP']:.1f}°C")
+    left_temp = values['PREHEAT_LEFT_TEMP']
+    left_percent = min(100, max(0, (left_temp / 200) * 100))
+    st.progress(left_percent/100)
+    status, status_class = get_temp_status(left_temp)
+    st.markdown(f'<span class="{status_class}">{status}</span>', unsafe_allow_html=True)
+    st.caption(f"Setpoint: 150°C | Current: {left_temp:.1f}°C")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with temp_col3:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("Preheat Ready Temperature", f"{values['PREHEAT_READY_VALUE']:.1f}°C")
+    ready_temp = values['PREHEAT_READY_VALUE']
+    ready_percent = min(100, max(0, (ready_temp / 200) * 100))
+    st.progress(ready_percent/100)
+    if ready_temp >= 150:
+        st.markdown('<span class="success-text">✅ Ready for operation</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="warning-text">⏳ Heating in progress</span>', unsafe_allow_html=True)
+    st.caption(f"Required: 150°C | Current: {ready_temp:.1f}°C")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Store history for trends
+if "history" not in st.session_state:
+    st.session_state.history = {
+        "Preheat_LEFT_Temp": [],
+        "Preheat_Fan_Temp": [],
+        "Developer_Temp": [],
+        "Daily_Production": [],
+        "timestamp": []
+    }
+
+# Update history
+current_time = datetime.now()
+st.session_state.history["Preheat_LEFT_Temp"].append(values['PREHEAT_LEFT_TEMP'])
+st.session_state.history["Preheat_Fan_Temp"].append(values['PREHEAT_FAN_TEMP'])
+st.session_state.history["Developer_Temp"].append(values['DEVELOPER_TEMP'])
+st.session_state.history["Daily_Production"].append(values['DAILY_PRODUCTION'])
+st.session_state.history["timestamp"].append(current_time)
+
+# Keep last 60 points (2 minutes at 2s refresh)
+max_points = 60
+for key in st.session_state.history:
+    st.session_state.history[key] = st.session_state.history[key][-max_points:]
+
+# Advanced Trends with Plotly
+st.markdown("### 📈 REAL-TIME TRENDS")
+trend_tab1, trend_tab2, trend_tab3 = st.tabs(["📊 Temperature Trends", "📈 Production Trends", "📉 Detailed Analysis"])
+
+with trend_tab1:
+    fig = make_subplots(rows=2, cols=1, 
+                        subplot_titles=('Temperature Trends Over Time', 'Temperature Distribution'),
+                        vertical_spacing=0.12)
+    
+    # Line chart for temperatures
+    fig.add_trace(
+        go.Scatter(x=st.session_state.history["timestamp"], 
+                   y=st.session_state.history["Preheat_LEFT_Temp"],
+                   name="Left Preheat", 
+                   line=dict(color='#e74c3c', width=2),
+                   mode='lines+markers'),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=st.session_state.history["timestamp"], 
+                   y=st.session_state.history["Preheat_Fan_Temp"],
+                   name="Fan Preheat", 
+                   line=dict(color='#f39c12', width=2),
+                   mode='lines+markers'),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=st.session_state.history["timestamp"], 
+                   y=st.session_state.history["Developer_Temp"],
+                   name="Developer", 
+                   line=dict(color='#3498db', width=2),
+                   mode='lines+markers'),
+        row=1, col=1
+    )
+    
+    # Add horizontal line for setpoint
+    fig.add_hline(y=150, line_dash="dash", line_color="green", 
+                  annotation_text="Setpoint 150°C", row=1, col=1)
+    
+    # Box plot for temperature distribution
+    temp_df = pd.DataFrame({
+        'Left Preheat': st.session_state.history["Preheat_LEFT_Temp"],
+        'Fan Preheat': st.session_state.history["Preheat_Fan_Temp"],
+        'Developer': st.session_state.history["Developer_Temp"]
+    })
+    
+    for col in temp_df.columns:
+        fig.add_trace(
+            go.Box(y=temp_df[col], name=col, showlegend=False),
+            row=2, col=1
+        )
+    
+    fig.update_layout(height=700, showlegend=True, 
+                      title_text="Temperature Analysis Dashboard",
+                      template="plotly_white")
+    fig.update_xaxes(title_text="Time", row=1, col=1)
+    fig.update_yaxes(title_text="Temperature (°C)", row=1, col=1)
+    fig.update_yaxes(title_text="Temperature Distribution", row=2, col=1)
+    st.plotly_chart(fig, use_container_width=True)
+
+with trend_tab2:
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=st.session_state.history["timestamp"], 
+                              y=st.session_state.history["Daily_Production"],
+                              name="Daily Production", 
+                              fill='tozeroy',
+                              line=dict(color='#27ae60', width=3),
+                              mode='lines+markers'))
+    
+    # Add moving average
+    if len(st.session_state.history["Daily_Production"]) > 5:
+        ma = pd.Series(st.session_state.history["Daily_Production"]).rolling(window=5).mean()
+        fig2.add_trace(go.Scatter(x=st.session_state.history["timestamp"], 
+                                  y=ma,
+                                  name="5-point Moving Average",
+                                  line=dict(color='#e74c3c', width=2, dash='dash')))
+    
+    fig2.update_layout(title="Production Trend Analysis", 
+                       xaxis_title="Time", 
+                       yaxis_title="Units Produced",
+                       height=500,
+                       template="plotly_white",
+                       hovermode='x unified')
+    st.plotly_chart(fig2, use_container_width=True)
+    
+    # Production rate calculation
+    if len(st.session_state.history["Daily_Production"]) > 1:
+        prod_diff = st.session_state.history["Daily_Production"][-1] - st.session_state.history["Daily_Production"][-2]
+        rate_per_min = prod_diff / 2  # 2 second refresh
+        rate_per_hour = rate_per_min * 60
+        col_rate1, col_rate2, col_rate3 = st.columns(3)
+        with col_rate1:
+            st.metric("Production Rate (per min)", f"{rate_per_min:.1f} units")
+        with col_rate2:
+            st.metric("Production Rate (per hour)", f"{rate_per_hour:.1f} units")
+        with col_rate3:
+            st.metric("Efficiency vs Target", f"{(rate_per_hour/target_hourly)*100:.1f}%")
+
+with trend_tab3:
+    # Create dataframe for analysis
+    df = pd.DataFrame({
+        'Timestamp': st.session_state.history["timestamp"],
+        'Left Temp (°C)': st.session_state.history["Preheat_LEFT_Temp"],
+        'Fan Temp (°C)': st.session_state.history["Preheat_Fan_Temp"],
+        'Developer Temp (°C)': st.session_state.history["Developer_Temp"],
+        'Production (units)': st.session_state.history["Daily_Production"]
+    })
+    
+    col_stats1, col_stats2 = st.columns(2)
+    with col_stats1:
+        st.write("**📊 Statistical Summary**")
+        st.dataframe(df.describe().round(2), use_container_width=True)
+        
+        # Correlation matrix
+        st.write("**📈 Correlation Analysis**")
+        corr = df.drop('Timestamp', axis=1).corr()
+        st.dataframe(corr.round(3), use_container_width=True)
+    
+    with col_stats2:
+        st.write("**📋 Recent Data (Last 10 readings)**")
+        st.dataframe(df.tail(10).round(1), use_container_width=True)
+        
+        # Export option
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Data as CSV",
+            data=csv,
+            file_name=f"scada_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+# Control Panel
+st.markdown("### 🎮 MACHINE CONTROL PANEL")
+control_col1, control_col2, control_col3 = st.columns(3)
+with control_col1:
+    st.markdown("#### Main Control")
+    
+    # Get current machine state
+    current_machine_state = values["MACHINE_START"]
+    
+    # Initialize session state for confirmation dialogs
+    if "show_start_confirm" not in st.session_state:
+        st.session_state.show_start_confirm = False
+    if "show_stop_confirm" not in st.session_state:
+        st.session_state.show_stop_confirm = False
+    
+    # Main control buttons
+    if not current_machine_state:
+        # Machine is stopped - show START button
+        if st.button("▶ START MACHINE", use_container_width=True, type="primary"):
+            st.session_state.show_start_confirm = True
+        
+        # Confirmation dialog for start
+        if st.session_state.show_start_confirm:
+            with st.popover("Confirm Start"):
+                st.warning("⚠️ Confirm machine start")
+                st.write("Ensure all safety conditions are met before starting.")
+                col_confirm1, col_confirm2 = st.columns(2)
+                with col_confirm1:
+                    if st.button("✅ Confirm Start", type="primary"):
+                        if write_bool("ns=4;i=71", True):
+                            st.success("✅ Machine started successfully")
+                            st.session_state.show_start_confirm = False
+                            time.sleep(0.5)
+                            st.rerun()
+                with col_confirm2:
+                    if st.button("❌ Cancel"):
+                        st.session_state.show_start_confirm = False
+                        st.rerun()
+    
+    else:
+        # Machine is running - show STOP button
+        if st.button("⏹ STOP MACHINE", use_container_width=True):
+            st.session_state.show_stop_confirm = True
+        
+        # Confirmation dialog for stop
+        if st.session_state.show_stop_confirm:
+            with st.popover("Confirm Stop"):
+                st.info("ℹ️ Confirm machine stop")
+                st.write("This will stop the production process.")
+                col_confirm1, col_confirm2 = st.columns(2)
+                with col_confirm1:
+                    if st.button("✅ Confirm Stop"):
+                        if write_bool("ns=4;i=71", False):
+                            st.warning("⚠️ Machine stopped")
+                            st.session_state.show_stop_confirm = False
+                            time.sleep(0.5)
+                            st.rerun()
+                with col_confirm2:
+                    if st.button("❌ Cancel"):
+                        st.session_state.show_stop_confirm = False
+                        st.rerun()
+    
+    # Emergency Stop (always available)
+    st.markdown("---")
+    if st.button("🛑 EMERGENCY STOP", use_container_width=True):
+        with st.popover("EMERGENCY STOP"):
+            st.error("🚨 EMERGENCY STOP")
+            st.write("This will immediately stop all machine operations!")
+            col_emerg1, col_emerg2 = st.columns(2)
+            with col_emerg1:
+                if st.button("🔴 CONFIRM EMERGENCY STOP", type="primary"):
+                    # Set emergency stop node
+                    write_bool("ns=4;i=132",True)
+                    # Also stop main machine
+                    write_bool("ns=4;i=71", False)
+                    st.error("🚨 EMERGENCY STOP ACTIVATED")
+                    time.sleep(0.5)
+                    st.rerun()
+            with col_emerg2:
+                if st.button("Cancel"):
+                    st.rerun()
+# with control_col1:
+#     st.markdown("#### Main Control")
+#     if st.button("▶ START MACHINE", use_container_width=True, type="primary"):
+#         if write_bool("ns=4;i=71", True):
+#             st.success("✅ Machine start command sent successfully")
+#             time.sleep(0.5)
+#             st.rerun()
+    
+#     if st.button("⏹ STOP MACHINE", use_container_width=True):
+#         if write_bool("ns=4;i=132",False):
+#             st.warning("⚠️ Machine stop command sent")
+#         else:
+#             time.sleep(0.5)
+#             write_bool("ns=4;i=132",False)
+#             st.rerun()
+
+# with control_col2:
+#     st.markdown("#### Counter Controls")
+#     if st.button("ENABLE COUNTER 1", use_container_width=True):
+#         if write_bool("ns=4;i=6", True):
+#             st.success("Counter 1 Enabled")
+#     if st.button("DISABLE COUNTER 1", use_container_width=True):
+#         if write_bool("ns=4;i=6", False):
+#             st.info("Counter 1 Disabled")
+
+# with control_col3:
+#     st.markdown("#### Additional Controls")
+#     if st.button("ENABLE COUNTER 2", use_container_width=True):
+#         write_bool("ns=4;i=7", True)
+#     if st.button("DISABLE COUNTER 2", use_container_width=True):
+#         write_bool("ns=4;i=7", False)
+#     if st.button("ENABLE COUNTER 3", use_container_width=True):
+#         write_bool("ns=4;i=8", True)
+#     if st.button("DISABLE COUNTER 3", use_container_width=True):
+#         write_bool("ns=4;i=8", False)
+
+# OEE Dashboard
+st.markdown("### 📊 OEE PERFORMANCE DASHBOARD")
+
+# OEE Settings
+with st.expander("⚙️ OEE Configuration Settings"):
+    oee_col1, oee_col2 = st.columns(2)
+    with oee_col1:
+        TARGET_PER_MINUTE = st.number_input("Target per minute (units)", value=2, min_value=1, key="oee_target")
+        IDEAL_CYCLE_TIME = st.number_input("Ideal cycle time (seconds)", value=30, min_value=1, key="ideal_cycle")
+    with oee_col2:
+        PLANNED_PRODUCTION_TIME = st.number_input("Planned production time (hours)", value=24, min_value=1, key="planned_time")
+        SHIFT_DURATION = st.number_input("Shift duration (hours)", value=8, min_value=1, key="shift_duration")
+
+# OEE Calculations
+availability = 100 if values["MACHINE_START"] else 0
+performance = (IDEAL_CYCLE_TIME / values["CYCLE_TIME"]) * 100 if values["CYCLE_TIME"] > 0 else 0
+performance = min(performance, 100)
+quality = 100  # Update with actual quality data when available
+
+oee = (availability/100) * (performance/100) * (quality/100) * 100
+
+oee_col1, oee_col2, oee_col3, oee_col4 = st.columns(4)
+
+with oee_col1:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("📊 Availability", f"{availability:.1f}%", 
+              delta="Good" if availability > 90 else "Poor",
+              delta_color="normal")
+    st.progress(availability/100)
+    st.caption("Machine uptime performance")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with oee_col2:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("⚡ Performance", f"{performance:.1f}%",
+              delta="Good" if performance > 85 else "Poor",
+              delta_color="normal")
+    st.progress(performance/100)
+    st.caption("Speed efficiency")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with oee_col3:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("✅ Quality", f"{quality:.1f}%",
+              delta="Excellent", delta_color="normal")
+    st.progress(quality/100)
+    st.caption("First pass yield")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with oee_col4:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    # Color code OEE based on value
+    if oee >= 85:
+        oee_color = "success-text"
+        oee_rating = "🏆 WORLD CLASS"
+    elif oee >= 60:
+        oee_color = "warning-text"
+        oee_rating = "⚠️ NEEDS IMPROVEMENT"
+    else:
+        oee_color = "danger-text"
+        oee_rating = "🔴 CRITICAL"
+    
+    st.markdown(f'<div class="{oee_color}">', unsafe_allow_html=True)
+    st.metric("🎯 Overall OEE", f"{oee:.1f}%")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.progress(oee/100)
+    st.caption(oee_rating)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Alerts and Notifications
+st.markdown("### ⚠️ ALERTS & NOTIFICATIONS")
+alert_container = st.container()
+
+with alert_container:
+    alerts = []
+    
+    # Temperature alerts
+    if values['PREHEAT_LEFT_TEMP'] > 180:
+        alerts.append(("🔴 CRITICAL: Left Preheat temperature exceeding limit! (Current: {:.1f}°C)".format(values['PREHEAT_LEFT_TEMP']), "critical"))
+    elif values['PREHEAT_LEFT_TEMP'] > 160:
+        alerts.append(("⚠️ WARNING: Left Preheat temperature high (Current: {:.1f}°C)".format(values['PREHEAT_LEFT_TEMP']), "warning"))
+    
+    if values['PREHEAT_FAN_TEMP'] > 180:
+        alerts.append(("🔴 CRITICAL: Fan Preheat temperature exceeding limit! (Current: {:.1f}°C)".format(values['PREHEAT_FAN_TEMP']), "critical"))
+    elif values['PREHEAT_FAN_TEMP'] > 160:
+        alerts.append(("⚠️ WARNING: Fan Preheat temperature high (Current: {:.1f}°C)".format(values['PREHEAT_FAN_TEMP']), "warning"))
+    
+    if values['DEVELOPER_TEMP'] > 45:
+        alerts.append(("🔴 CRITICAL: Developer temperature too high! (Current: {:.1f}°C)".format(values['DEVELOPER_TEMP']), "critical"))
+    elif values['DEVELOPER_TEMP'] > 40:
+        alerts.append(("⚠️ WARNING: Developer temperature high (Current: {:.1f}°C)".format(values['DEVELOPER_TEMP']), "warning"))
+    
+    # Production alerts
+    if not values["MACHINE_START"]:
+        alerts.append(("⏹️ MACHINE STOPPED - Production halted", "warning"))
+    
+    if alerts:
+        for alert, level in alerts:
+            if level == "critical":
+                st.markdown(f'<div class="alert-box alert-critical">{alert}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="alert-box alert-warning">{alert}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="alert-box alert-success">✅ All systems operating normally</div>', unsafe_allow_html=True)
+
+# Footer
+st.markdown("---")
+st.markdown("""
+    <div style="text-align: center; color: #666; padding: 1rem;">
+        <small>HASSE PROCESSOR COLORMAN D SCADA System | Real-time Industrial Monitoring | Version 2.0</small>
+    </div>
+""", unsafe_allow_html=True)
+
+# Auto-refresh mechanism
+time.sleep(2)
+st.rerun()
