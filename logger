@@ -1,1 +1,56 @@
+from opcua import Client
+from pymongo import MongoClient
+from datetime import datetime
+import time
 
+# OPC UA Server
+url = "opc.tcp://192.168.0.1:4840"
+client = Client(url)
+
+# MongoDB Connection
+mongo_client = MongoClient("mongodb://localhost:27017/")
+db = mongo_client["machin_data"]
+collection = db["plc_log"]
+
+try:
+    print("Connecting to PLC...")
+    client.connect()
+    print("PLC Connected")
+
+    # Node IDs
+    CUREENT_CYCLE_TIME           = client.get_node("ns=4;i=56")
+    D_PRODUCTION                 = client.get_node("ns=4;i=52")
+    TOTAL_PRODUCTION             = client.get_node("ns=4;i=51")
+    ACTUAL_PREHEAT_FAN_TEMP      = client.get_node("ns=4;i=72")
+    ACTUAL_PREHEAT_LEFT_TEMP     = client.get_node("ns=4;i=73")
+    ACTUAL_PREHEAT_READY_VALUE   = client.get_node("ns=4;i=74")
+    ACTUAL_VALUE                 = client.get_node("ns=4;i=76")
+    Machine_Start        = client.get_node("ns=4;i=71")
+    Machine_Status       = client.get_node("ns=4;i=70")
+
+    while True:
+
+        data = {
+            "Current cycle time": CUREENT_CYCLE_TIME.get_value(),
+            "Daily Prouction": D_PRODUCTION.get_value(),
+            "Total Production" : TOTAL_PRODUCTION.get_value(),
+            "Actual Preheat Fan Temp":ACTUAL_PREHEAT_FAN_TEMP.get_value(), 
+            "Preheat_Left_Temp":ACTUAL_PREHEAT_LEFT_TEMP.get_value(),  
+            "Preheat_Ready_Temp":ACTUAL_PREHEAT_READY_VALUE.get_value(), 
+            "Preheat Chamber Temp":ACTUAL_VALUE.get_value(),  # ✅ temperature value
+            "machine_start": Machine_Start.get_value(),
+            "machine_status": Machine_Status.get_value(),
+            "timestamp": datetime.now()
+        }
+
+        collection.insert_one(data)
+
+        print("Logged:", data)
+
+        time.sleep(2)
+
+except Exception as e:
+    print("Error:", e)
+
+finally:
+    client.disconnect()
