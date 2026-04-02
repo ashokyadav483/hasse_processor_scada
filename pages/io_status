@@ -1,1 +1,82 @@
+import streamlit as st
+from opcua import Client
+import pandas as pd
+import time
 
+# ---------------- CONFIG ----------------
+PLC_URL = "opc.tcp://192.168.0.1:4840"   # Change if needed
+
+# ---------------- PAGE SETUP ----------------
+st.set_page_config(layout="wide")
+st.title("🏭 Machine I/O Status Dashboard")
+
+# ---------------- CONNECT OPC UA ----------------
+@st.cache_resource
+def connect_plc():
+    client = Client(PLC_URL)
+    client.connect()
+    return client
+
+client = connect_plc()
+
+# ---------------- TAG LIST ----------------
+tags = {
+    "Inputs": {
+        "LEVEL_DEVELOPER_MINIM": "ns=4;i=139",
+        "LEVEL_SWITCH_PREWASH": "ns=4;i=105",
+        "LEVEL_SWITCH_RINSING": "ns=4;i=137",
+        "LEVEL_SW_GUM": "ns=4;i=138",
+        "MAIN_CONTACTOR": "ns=4;i=107",
+    },
+    "Outputs": {
+        "PLATE_EXIT1": "ns=4;i=109",
+        "PLATE_EXIT2": "ns=4;i=110",
+        "HORN": "ns=4;i=119",
+        "GREEN_LAMP": "ns=4;i=70",
+        "YELLOW_LAMP": "ns=4;i=121",
+        "RED_LAMP": "ns=4;i=122",
+    }
+}
+
+# ---------------- READ FUNCTION ----------------
+def read_tag(node_id):
+    try:
+        node = client.get_node(node_id)
+        return node.get_value()
+    except:
+        return None
+
+# ---------------- UI FUNCTION ----------------
+def display_section(title, tag_dict):
+    st.subheader(title)
+    cols = st.columns(3)
+
+    i = 0
+    for name, node in tag_dict.items():
+        value = read_tag(node)
+
+        status = "🟢 ON" if value else "🔴 OFF"
+        color = "green" if value else "red"
+
+        with cols[i % 3]:
+            st.markdown(
+                f"""
+                <div style='padding:15px; border-radius:10px; background-color:#1e1e1e;'>
+                    <h4 style='color:white;'>{name}</h4>
+                    <h3 style='color:{color};'>{status}</h3>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        i += 1
+
+# ---------------- AUTO REFRESH ----------------
+refresh = st.sidebar.slider("Refresh Rate (sec)", 1, 10, 2)
+
+# ---------------- DISPLAY ----------------
+while True:
+    display_section("🔹 Machine Inputs", tags["Inputs"])
+    display_section("🔸 Machine Outputs", tags["Outputs"])
+
+    time.sleep(refresh)
+    st.rerun()
