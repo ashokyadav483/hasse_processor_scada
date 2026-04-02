@@ -1,1 +1,20 @@
+from opcua import Client
+import config
 
+def connect_plc():
+    client = Client(config.PLC_URL)
+    client.connect()
+    return client
+
+def read_values():
+    client = connect_plc()
+    temperature_fan = client.get_node(config.NODE_PREHEAT_FAN_TEMP).get_value()
+    temperature_left = client.get_node(config.NODE_PREHEAT_LEFT_TEMP).get_value()
+    client.disconnect()
+    return temperature_fan, temperature_left
+
+def write_motor(status):
+    client = connect_plc()
+    node = client.get_node(config.NODE_PREHEAT_FAN_TEMP)
+    node.set_value(status)
+    client.disconnect()
